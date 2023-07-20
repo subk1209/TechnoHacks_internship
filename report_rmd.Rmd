@@ -1,0 +1,303 @@
+---
+title: "Task 1 | House Price Prediction"
+author: "Subhajit Karmakar"
+date: "2023-07-18"
+output: html_document
+---
+
+<style type="text/css">
+  body{
+  font-size: 12pt;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width = 10, fig.height = 4.5)
+```
+
+## Introduction
+This dataset contains house sale prices for King County, which includes Seattle. It includes homes sold between May 2014 and May 2015. Many features are there in the data, using those, we will build a regression model that will help us to predict the price of a new house. 
+
+**Data scource:** <https://www.kaggle.com/datasets/harlfoxem/housesalesprediction?datasetId=128&sortBy=voteCount&language=R>
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggcorrplot)
+library(gridExtra)
+library(caTools)
+library(glue)
+library(olsrr)
+
+df <- read_csv("D:/Internships/Technohack/Task - 1/data.csv")
+
+# first few rows of the data:
+knitr::kable(head(df[1:5,]), format = 'html') %>% 
+  kableExtra::kable_styling()
+```
+
+
+```{r}
+glimpse(df)
+
+glue("Number of NA value present in the data: {n}",
+     n = df %>% is.na() %>% sum())
+```
+
+**Observation:** We can see that there are many categorical variables in the data, but they are not in proper format. First we will get an idea about the frequency distribution of the `categorical` variables.
+
+```{r, message=FALSE, warning=FALSE}
+# function to make the frequency distribution:
+count_plot <- function(var){
+  df %>% count({{var}}) %>% 
+    ggplot(aes(x = as.factor({{var}}), y = n)) +
+    geom_bar(stat = 'identity', position = position_dodge2(),
+             fill = 'red', width = 0.4) +
+    theme(axis.title = element_text(face = 'bold', size = 25),
+          axis.text = element_text(face = 'bold', size = 15)) +
+    theme_minimal()
+}
+
+attach(df)
+count_plot(bedrooms) -> c1
+count_plot(floors) -> c2
+count_plot(condition) -> c3
+count_plot(grade) -> c4
+count_plot(view) -> c5
+count_plot(waterfront) -> c6
+grid.arrange(c1,c2,c3,c4,c5,c6, nrow = 2)
+count_plot(bathrooms) 
+detach(df)
+```
+
+**Observation:** We can see that some categorical variables have too many levels, which might create problems in data visualization. In the next few lines of code, we will modify the levels and proceed with data visualization. But let us first see the distribution of the price of the houses.
+
+
+```{r, warning=FALSE, message=FALSE}
+ggplot(df, aes(price)) + geom_histogram(aes(y = after_stat(density)),
+                                        fill = 'yellow',
+                                        colour = 'black',
+                                        bins = 50) +
+  labs(title = 'Distribution of price (dollar)',
+       x = 'Price (Dollar)', y = 'Frequency density') +
+  theme_minimal() +
+  theme(plot.title = element_text(face = 'bold', size = 20),
+        axis.title = element_text(face = 'bold', size = 12))
+```
+
+We note that the distribution is highly skewed, so while making the visualizations, we will consider the `log` of the price for better understanding.
+
+```{r, warning=FALSE, message=FALSE}
+df1 <- df # saving a copy of the original data
+summary(df1)
+
+# re-leveling the categorical columns and modification of the columns
+
+df1 %>% mutate(bedrooms = case_when(
+  bedrooms <= 3 ~ "<=3",
+  bedrooms > 3 ~ ">3"
+)) %>% mutate(bedrooms = as.factor(bedrooms)) -> df1
+df$bedrooms <- as.factor(df$bedrooms)
+
+
+df1 %>% mutate(bathrooms = case_when(
+  bathrooms <= 1.5 ~ "<=1.5",
+  bathrooms > 1.5 & bathrooms <= 2.5 ~ "(1.5,2.5]",
+  bathrooms > 2.5 ~ ">2.5"
+)) %>% mutate(bathrooms = as.factor(bathrooms)) -> df1
+df$bathrooms <- as.factor(df$bathrooms)
+
+
+df1 %>% mutate(floors = case_when(
+  floors < 2 ~ "<2",
+  floors >= 2 ~ ">=2" 
+)) %>% mutate(floors = as.factor(floors)) -> df1
+df$floors <- as.factor(df$floors)
+
+
+df1 %>% mutate(condition = case_when(
+  condition <= 3 ~ '0',
+  condition > 3 ~ '1'
+)) %>% mutate(condition = as.factor(condition)) -> df1
+df$condition <- as.factor(df$condition)
+
+
+df1 %>% mutate(grade = case_when(
+  grade <= 6 ~ '0',
+  grade > 6 & grade <= 8 ~ '1',
+  grade > 8 ~ '2'
+)) %>% mutate(grade = as.factor(grade)) -> df1
+df$grade <- as.factor(df$grade)
+
+
+df1 %>% mutate(view = case_when(
+  view == 0 ~ '0',
+  view > 0 ~ '1'
+)) %>% mutate(view = as.factor(view)) -> df1
+df$view <- as.factor(df$view)
+
+
+df1 %>% mutate(renovated = case_when(
+  yr_renovated == 0 ~ '0',
+  yr_renovated > 0 ~ '1'
+)) %>% mutate(renovated = as.factor(renovated)) -> df1
+
+df$waterfront <- as.factor(df$waterfront)
+df1$waterfront <- as.factor(df1$waterfront)
+
+
+# For model
+df2 <- df %>% select(-c(id,date,sqft_basement))
+```
+
+**Note:** For data visualization, we will use the `df1` dataframe and for model building in future, we will use the `df2` dataframe. Also, from the `summary` of the data, we can see that a lot of `0` in the `sqft_basement` column, so we will delete that to avoid confusion. 
+
+
+## Data visualization
+
+```{r, message=FALSE, warning=FALSE}
+# price ~ categorical variables:
+plot2 <- function(fill_var){
+  cols <- c('yellow','blue','red')
+  
+  df1 %>% ggplot(aes(log(price), fill = {{fill_var}})) + 
+    geom_density(colour = 'black', alpha = 0.4) +
+    scale_x_continuous(n.breaks = 10) + 
+    labs(x = '') + theme_minimal() +
+    scale_fill_manual(values = cols) -> p1
+  
+  df1 %>% ggplot(aes(log(price), fill = {{fill_var}})) + 
+    geom_boxplot(outlier.colour = 'orange',
+                 outlier.size = 0.6) + 
+    labs(x = '') +theme_minimal() +
+    scale_fill_manual(values = cols) -> p2
+  grid.arrange(p1,p2, ncol = 2)
+}
+
+attach(df1)
+plot2(bedrooms)
+plot2(bathrooms)
+plot2(floors)
+plot2(waterfront)
+plot2(view)
+plot2(condition)
+plot2(grade)
+plot2(renovated)
+detach(df1)
+```
+
+**Interpretation:** From the above plots, we can see that some categorical variables are very significant. For example, the price of the house increases with the number of bedrooms a house has, similar patterns are present in the cases of `bathrooms`,`floors`,`grade` etc. The presence of the waterfront is affecting the price very much, also the `view`. But we can see that the condition of a house does not affect the price too much, similarly, the price does not depend too much on whether a house is renovated or not at all.
+
+
+```{r}
+name1 <- c('<2' = 'Floor < 2','>=2' = 'Floor >= 2')
+df1 %>% ggplot(aes(x = bedrooms, y = log(price), fill = bathrooms)) +
+  geom_boxplot(outlier.colour = 'orange') + 
+  facet_wrap(.~floors, labeller = 
+              labeller(floors = as_labeller(name1, label_context))) +
+  theme_linedraw()
+```
+
+**Comment:** We have specifies earlier that we have considered the logarithm of `price` for better understanding of the visualizations, since the distribution of price variable is highly skewed. From this plot, we can get an idea about the distribution of the price with respect to 3 categorical variables. If the number of floors in the house is more than 2 and more than 2.5 bathrooms are there, then the price of the house tends to be very high which is very obvious, provided that the house contains more than 3 bedrooms. The overall idea we get from the plot is that, price is very much dependent on the number of floors and bathrooms, but the number of bedrooms does not affect too much since the location of the boxplots is not changing significantly w.r.t the levels of bedrooms.
+
+
+```{r}
+df1 %>% ggplot(aes(x = view, y = log(price), fill = waterfront)) +
+  geom_boxplot() + facet_grid(renovated ~ grade) + 
+  theme_bw()
+```
+**Comment:** It is evident from the plot that, the `grade` is a significant factor for determining the price, it increases with the grade which is obvious. But another observation is that, for the renovated houses, the variation in price has decreased. Also, no waterfront is there in case of `view = 0`.
+
+
+```{r}
+df2 %>% select(where(is_double)) %>% 
+  cor() %>% ggcorrplot(lab = T, type = 'upper',
+                       ggtheme = ggplot2::theme_minimal)
+```
+
+**Comment:** From the above plot, we can get an idea about the relationships between the variables. There are some weak correlations between `price` and some covariates. It is also clear that, multicollinearity is present in the numeric features, we will check for the multicollinearity statistically and omit the necessay numeric features.
+
+```{r, message=FALSE, warning=FALSE}
+l1 <- lm(price ~ sqft_lot15 + sqft_living15 + long + lat +
+          zipcode + yr_renovated + yr_built + 
+          sqft_above + sqft_lot + sqft_living, data = df2)
+
+ols_vif_tol(l1)
+```
+We can see that, VIF is more than 5 for `sqft_living` and `sqft_above`, so first we will omit the `sqft_living` variable since VIF is highest for this case only and we will check agin for the presence of multicollinearity.
+
+```{r}
+df2 <- df2 %>% select(-sqft_living)
+
+l2 <- lm(price ~ sqft_lot15 + sqft_living15 + long + lat +
+          zipcode + yr_renovated + yr_built + 
+          sqft_above + sqft_lot, data = df2)
+
+ols_vif_tol(l2)
+```
+Now, all the VIF values are strictly less than 5, so we can safely say that there is no multicolliearity in the data.
+
+
+
+## Model fitting
+Now, we will fit a multiple linear regression to our data which can predict the price of a new house.
+
+```{r}
+# Splitting the dataset (considering 75:24 ratio)
+set.seed(123)
+s <- sample.split(df2$price, SplitRatio = 3/4)
+train_data <- df2[s,]
+test_data <- df2[!s,]
+
+f <- function(d)(paste(d[1], 'x', d[2]))
+glue::glue("Dimension of training data: {d1}",
+           "Dimension of testing data: {d2}",
+           d1 = f(dim(train_data)), d2 = f(dim(test_data)),
+           .sep = '\n')
+```
+
+```{r}
+l <- lm(price ~ ., data = train_data)
+summary(l)
+```
+
+Note that the `bedrooms` is not statistically significant, so we will remove that column and fit the model again.
+
+```{r}
+train_data2 <- train_data %>% select(-bedrooms)
+test_data2 <- test_data %>% select(-bedrooms)
+l2 <- lm(price ~ ., data = train_data2)
+summary(l2)
+```
+
+**Comment:** We can see that $R^2 = 0.74$, so $74\%$ of the total variation in price is explained by the fitted multiple linear regression model. That is, the model is good. Also from the summary table, we can see that all predictors are statistically significant and the regression is significant since the p-value of the F-statistic is very low.
+
+```{r}
+## For test data:
+
+price_pred <- predict(l2, newdata = test_data2)
+var(price_pred)/var(test_data2$price)
+```
+
+Thus, our fitted model is able to explain $84\%$ of the total variation of price in test data, which implies that the fit is good.
+
+```{r}
+my_col = c('blue','orange')
+data.frame('Actual' = test_data2$price,
+           'Fitted' = price_pred) %>% 
+  pivot_longer(Actual:Fitted, names_to = 'Type', values_to = 'Price') %>%
+  ggplot(aes(Price, fill = Type)) + geom_density(alpha = 0.4, colour = NA) +
+  scale_fill_manual(values = my_col) + theme_minimal() + 
+  labs(title = 'Distribution of price | Test data')+
+  theme(plot.title = element_text(face = 'bold', size = 20),
+      axis.title = element_text(face = 'bold', size = 12),
+      legend.title = element_text(face = 'bold', size = 10),
+      legend.text = element_text(face = 'bold', size = 8))
+```
+
+
+**Comment:** The distributions of predicted and actual price are close to each other.
+
+
+
+
